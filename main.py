@@ -4,6 +4,7 @@ import re
 import pandas as pd
 import time
 import html
+import random
 import streamlit.components.v1 as components
 
 # --- CẤU HÌNH ---
@@ -25,20 +26,21 @@ st.markdown("""
     }
     .stButton>button:hover { opacity: 0.9; }
 
-    /* Chỉnh lại Code Block cho gọn, căn giữa với STT */
-    .stCodeBlock { margin-bottom: 0px !important; }
-    div[data-testid="stVerticalBlock"] > div { align-items: center; }
-    
-    /* STT */
-    .stt-label { font-size: 14px; font-weight: bold; color: #8b949e; padding-top: 10px; }
+    /* KẾT QUẢ STYLE MỚI (Email trên - Link dưới) */
+    .res-card {
+        background-color: #161b22; 
+        border: 1px solid #30363d; 
+        border-radius: 8px; 
+        padding: 10px; 
+        margin-bottom: 10px;
+    }
+    .res-email { color: #8b949e; font-size: 13px; font-weight: bold; margin-bottom: 5px; display: flex; align-items: center; }
+    .res-idx { background-color: #238636; color: white; padding: 2px 6px; border-radius: 4px; margin-right: 8px; font-size: 11px; }
 
     /* Header cột */
     .col-header { font-size: 16px; font-weight: bold; margin-bottom: 10px; border-bottom: 2px solid #30363d; padding-bottom: 5px; }
     .text-green { color: #238636; border-color: #238636; }
     .text-blue { color: #58a6ff; border-color: #1f6feb; }
-    
-    /* Ẩn scrollbar của dataframe cho đẹp */
-    .stDataFrame { border: 1px solid #30363d; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -46,6 +48,7 @@ st.markdown("""
 if 'queue' not in st.session_state: st.session_state.queue = []
 if 'results' not in st.session_state: st.session_state.results = []
 if 'check_results' not in st.session_state: st.session_state.check_results = []
+if 'input_raw' not in st.session_state: st.session_state.input_raw = "" # Biến để clear input
 
 # --- LOGIC ---
 def parse_excel(text):
@@ -56,7 +59,6 @@ def parse_excel(text):
         if not line: continue
         parts = line.split('\t') if "\t" in line else line.split('|')
         while len(parts) < 4: parts.append("")
-        # LƯU CẢ DÒNG RAW ĐỂ HIỆN THỊ
         valid.append({
             "Raw": line, 
             "Email": parts[0], 
@@ -65,6 +67,12 @@ def parse_excel(text):
             "Client_ID": parts[3]
         })
     return valid
+
+def add_data():
+    """Hàm thêm dữ liệu và tự xóa ô nhập"""
+    if st.session_state.input_raw:
+        st.session_state.queue.extend(parse_excel(st.session_state.input_raw))
+        st.session_state.input_raw = "" # Clear ô nhập ngay lập tức
 
 def get_link_with_retry(item):
     try:
@@ -81,26 +89,23 @@ def get_link_with_retry(item):
 
 def check_link_status(url, li_at_cookie):
     if not li_at_cookie: return "⚠️ THIẾU COOKIE"
-    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.linkedin.com/',
-        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
+        'authority': 'www.linkedin.com',
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.6,en;q=0.5',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     }
     cookies = {'li_at': li_at_cookie}
-    
     try:
-        r = requests.get(url, headers=headers, cookies=cookies, timeout=10, allow_redirects=True)
+        session = requests.Session()
+        r = session.get(url, headers=headers, cookies=cookies, timeout=10, allow_redirects=True)
         content = r.text.lower()
         
-        if "login" in r.url or "welcome back" in content: return "⚠️ COOKIE DIE (Hết hạn)"
-        if "đổi phiếu mua hàng" in content or "premium-chooser__cta" in content: return "✅ LIVE"
-        if "redeem gift" in content or "activate subscription" in content: return "✅ LIVE"
+        if "login" in r.url: return "⚠️ COOKIE DIE"
+        if "đổi phiếu" in content or "redeem" in content or "activate" in content: return "✅ LIVE"
         if "already been redeemed" in content or "đã được đổi" in content: return "❌ DIE (Đã dùng)"
-        if "offer is no longer active" in content or "không còn hiệu lực" in content: return "❌ DIE (Hết hạn)"
-        
-        return "❓ UNKNOWN (Check tay)"
-        
+        if "offer is no longer active" in content: return "❌ DIE (Hết hạn)"
+        return "❓ UNKNOWN"
     except: return "⚠️ LỖI MẠNG"
 
 # --- GIAO DIỆN CHÍNH ---
@@ -110,60 +115,70 @@ tab1, tab2 = st.tabs(["📦 KHO & QUÉT", "⚡ CHECK LINK (LIVE/DIE)"])
 
 # ================= TAB 1: SĂN MAIL =================
 with tab1:
+    # INPUT TỰ XÓA
     with st.expander("➕ DÁN DỮ LIỆU VÀO ĐÂY (Raw Excel/Text)", expanded=False):
-        raw = st.text_area("", height=100, label_visibility="collapsed", placeholder="Email | Pass | Token | ID")
-        if st.button("THÊM VÀO KHO"):
-            if raw: st.session_state.queue.extend(parse_excel(raw)); st.rerun()
+        # Dùng key='input_raw' để quản lý nội dung
+        st.text_area("", height=100, label_visibility="collapsed", placeholder="Email | Pass | Token | ID", key="input_raw")
+        # Nút bấm gọi hàm add_data
+        st.button("THÊM VÀO KHO", on_click=add_data)
     
     st.markdown("<br>", unsafe_allow_html=True)
     c_left, c_right = st.columns(2)
     
-    # --- CỘT TRÁI: KHO MAIL (UPDATED) ---
+    # --- CỘT TRÁI: KHO MAIL ---
     with c_left:
         st.markdown(f'<div class="col-header text-green">KHO ĐANG CHỜ ({len(st.session_state.queue)}) 📦</div>', unsafe_allow_html=True)
         
         if st.session_state.queue:
-            # Nút xóa kho
             if st.button("🗑️ XÓA KHO MAIL"): st.session_state.queue=[]; st.rerun()
-            
             st.markdown("---")
-            
-            # Vòng lặp hiển thị từng dòng
-            # enumerate(..., 1) để bắt đầu đếm từ 1
             for i, item in enumerate(st.session_state.queue, 1):
-                # Chia cột: [STT] [Nội dung Raw (Copy)] [Nút Xóa]
                 c_stt, c_code, c_del = st.columns([0.8, 8, 1])
-                
-                with c_stt:
-                    st.markdown(f"<div class='stt-label'>#{i}</div>", unsafe_allow_html=True)
-                
-                with c_code:
-                    # st.code tự động có nút copy và scroll ngang nếu dài
-                    st.code(item['Raw'], language="text")
-                
+                with c_stt: st.markdown(f"<div style='padding-top:10px;font-weight:bold;color:#8b949e'>#{i}</div>", unsafe_allow_html=True)
+                with c_code: st.code(item['Raw'], language="text")
                 with c_del:
-                    # Nút xóa từng dòng
                     if st.button("❌", key=f"del_q_{i}"):
-                        st.session_state.queue.pop(i-1)
-                        st.rerun()
+                        st.session_state.queue.pop(i-1); st.rerun()
         else:
-            st.info("Kho đang trống... Dán dữ liệu ở trên đi ní!")
+            st.info("Kho trống! Dán dữ liệu rồi bấm Thêm nha ní.")
 
-    # --- CỘT PHẢI: KẾT QUẢ ---
+    # --- CỘT PHẢI: KẾT QUẢ (STYLE MỚI) ---
     with c_right:
         st.markdown(f'<div class="col-header text-blue">KẾT QUẢ ({len(st.session_state.results)}) 📥</div>', unsafe_allow_html=True)
         b1, b2 = st.columns(2)
+        
+        # LOGIC QUÉT VỚI TEXT DUI DUI
         with b1:
             if st.button("🔥 BẮT ĐẦU QUÉT"):
                 if st.session_state.queue:
                     new_q = []
+                    status_box = st.empty() # Khung hiện text chạy
                     bar = st.progress(0)
+                    
+                    # Danh sách câu thoại vui nhộn
+                    funny_texts = [
+                        "🕵️‍♂️ Đang lẻn vào nhà Microsoft...", 
+                        "🚀 Đang phóng tên lửa đi lấy Link...", 
+                        "🏃💨 Chạy nhanh hết mức có thể...", 
+                        "☕ Làm ngụm cà phê đợi xíu nha...", 
+                        "🔎 Đang soi từng cái Mail...",
+                        "🐢 Từ từ... Hà Nội không vội được đâu...",
+                        "💎 Sắp có hàng ngon rồi..."
+                    ]
+                    
                     for i, item in enumerate(st.session_state.queue):
+                        # Random câu thoại
+                        msg = random.choice(funny_texts)
+                        status_box.info(f"{msg} ({i+1}/{len(st.session_state.queue)})")
+                        
                         link = get_link_with_retry(item)
                         if link: st.session_state.results.append({"Email": item['Email'], "Link": link})
                         else: new_q.append(item)
                         bar.progress((i+1)/len(st.session_state.queue)); time.sleep(0.5)
-                    st.session_state.queue=new_q; st.rerun()
+                    
+                    status_box.success("✅ Xong rồi nè! Lụm lúa!")
+                    st.session_state.queue=new_q; time.sleep(1); st.rerun()
+        
         with b2:
             if st.button("🔍 LỌC TRÙNG"):
                 if st.session_state.results:
@@ -172,40 +187,52 @@ with tab1:
                     st.success("Đã lọc!"); time.sleep(1); st.rerun()
 
         st.markdown("---")
+        
         if st.session_state.results:
             c_copy, c_del = st.columns([2, 1])
             with c_copy:
-                if st.button("📋 COPY ALL"):
+                if st.button("📋 COPY ALL (CHỈ LINK)"):
                     txt = "\n".join([r['Link'] for r in st.session_state.results])
                     st.code(txt, language="text")
             with c_del:
                 if st.button("🗑️ XÓA LOG"): st.session_state.results=[]; st.rerun()
             
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # HIỂN THỊ KẾT QUẢ: EMAIL TRÊN - LINK DƯỚI
             for i, res in enumerate(st.session_state.results, 1):
-                 # Hiển thị kết quả cũng có STT từ 1
-                c_r_stt, c_r_link = st.columns([0.8, 9])
-                with c_r_stt: st.markdown(f"<div class='stt-label'>#{i}</div>", unsafe_allow_html=True)
-                with c_r_link: st.code(res['Link'], language="text")
+                # Tạo Card chứa
+                st.markdown(f"""
+                <div class="res-card">
+                    <div class="res-email">
+                        <span class="res-idx">#{i}</span> 📧 {res['Email']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                # Link nằm ngay dưới
+                st.code(res['Link'], language="text")
         else:
             st.caption("Chưa có link nào...")
 
 # ================= TAB 2: CHECK LINK =================
 with tab2:
     st.header("🕵️ CHECK LIVE/DIE")
-    li_at = st.text_input("Dán Cookie li_at mới nhất vào đây:", value="", placeholder="Ví dụ: AQEDAWQ6ALwFTvhk...", type="password")
+    li_at = st.text_input("Dán Cookie li_at:", value="", type="password")
     links_input = st.text_area("Dán list link:", height=150)
     
     if st.button("🚀 CHECK NGAY"):
-        if not li_at: st.error("Chưa nhập Cookie kìa ba!")
-        elif links_input:
+        if links_input and li_at:
             links = [l.strip() for l in links_input.split('\n') if "http" in l]
             st.session_state.check_results = []
             bar = st.progress(0)
+            status_check = st.empty()
+            
             for i, link in enumerate(links):
+                status_check.info(f"🔎 Đang check cái thứ {i+1}...")
                 status = check_link_status(link, li_at)
                 st.session_state.check_results.append({"Link": link, "Status": status})
                 bar.progress((i+1)/len(links)); time.sleep(1)
-            st.success("Xong!")
+            status_check.success("Check xong!")
             
     if st.session_state.check_results:
         def color(row):
