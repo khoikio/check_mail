@@ -6,6 +6,7 @@ import time
 import html
 import json
 import os
+import uuid
 import streamlit.components.v1 as components
 
 # --- CẤU HÌNH ---
@@ -53,23 +54,31 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- BỘ NHỚ ---
-DB_FILE = 'memory_data.json'
+# --- BỘ NHỚ (tách theo session = mỗi trình duyệt/người dùng 1 file riêng, không dùng chung) ---
+def _get_session_id():
+    if '._session_file_id' not in st.session_state:
+        st.session_state['._session_file_id'] = str(uuid.uuid4())
+    return st.session_state['._session_file_id']
+
+def _db_file():
+    return f"memory_data_{_get_session_id()}.json"
 
 def load_memory():
-    if os.path.exists(DB_FILE):
+    db = _db_file()
+    if os.path.exists(db):
         try:
-            with open(DB_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+            with open(db, 'r', encoding='utf-8') as f: return json.load(f)
         except: pass
     return {"res_success": [], "res_warning": [], "res_fail": []}
 
 def save_memory():
+    db = _db_file()
     data = {
         "res_success": st.session_state.res_success,
         "res_warning": st.session_state.res_warning,
         "res_fail": st.session_state.res_fail
     }
-    with open(DB_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=4)
+    with open(db, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=4)
 
 # --- INIT STATE ---
 saved_data = load_memory()
@@ -183,9 +192,15 @@ with tab1:
             if status == "SUCCESS":
                 st.session_state.res_success.append({"Email": item['Email'], "Pass": item['Pass'], "Content": content})
             elif status == "WARNING":
-                st.session_state.res_warning.append({"Email": item['Email'], "Pass": item['Pass'], "Content": content})
+                st.session_state.res_warning.append({
+                    "Email": item['Email'], "Pass": item['Pass'], "Token": item['Token'], "Client_ID": item['Client_ID'],
+                    "Raw": item['Raw'], "Content": content
+                })
             else:
-                st.session_state.res_fail.append({"Email": item['Email'], "Pass": item['Pass'], "Content": content})
+                st.session_state.res_fail.append({
+                    "Email": item['Email'], "Pass": item['Pass'], "Token": item['Token'], "Client_ID": item['Client_ID'],
+                    "Raw": item['Raw'], "Content": content
+                })
             
             # Lưu và cập nhật thanh chạy
             save_memory()
@@ -211,10 +226,10 @@ with tab1:
                  st.session_state.res_success = list(unique)
              prog.progress(50)
              if st.session_state.res_warning:
-                 unique = {r['Email']:r for r in st.session_state.res_warning}.values()
+                 unique = {(r.get('Raw') or r['Email']): r for r in st.session_state.res_warning}.values()
                  st.session_state.res_warning = list(unique)
              if st.session_state.res_fail:
-                 unique = {r['Email']:r for r in st.session_state.res_fail}.values()
+                 unique = {(r.get('Raw') or r['Email']): r for r in st.session_state.res_fail}.values()
                  st.session_state.res_fail = list(unique)
              
              save_memory()
@@ -227,8 +242,11 @@ with tab1:
 
     st.markdown("---")
     
-    # KẾT QUẢ
-    col_green, col_yellow, col_red = st.columns(3)
+    # KẾT QUẢ: CÓ LINK (trái) | CÓ BILL (giữa) | FAIL (phải). Định dạng Bill & Fail: Email|Pass|Token|Client_ID
+    def _raw_line(r):
+        return r.get('Raw') or (f"{r['Email']}|{r.get('Pass','')}|{r.get('Token','')}|{r.get('Client_ID','')}")
+
+    col_green, col_yellow, col_red = st.columns([1, 2, 1])  # Bill ở giữa, rộng hơn
 
     with col_green:
         st.markdown(f'<div class="col-title bg-green">🟢 CÓ LINK ({len(st.session_state.res_success)})</div>', unsafe_allow_html=True)
@@ -241,18 +259,20 @@ with tab1:
     with col_yellow:
         st.markdown(f'<div class="col-title bg-yellow">🟡 CÓ BILL ({len(st.session_state.res_warning)})</div>', unsafe_allow_html=True)
         if st.session_state.res_warning:
-            txt = "\n".join([f"{r['Email']}|{r['Pass']}" for r in st.session_state.res_warning])
+            txt = "\n".join([_raw_line(r) for r in st.session_state.res_warning])
             st.code(txt, language="text")
             for r in st.session_state.res_warning:
-                st.markdown(f"""<div class="card card-warning"><div class="email-txt">📧 {r['Email']}</div><div style="color:#facc15;font-weight:bold;">⚠️ {r['Content']}</div><div style="font-size:10px;color:#666;">Pass: {r['Pass']}</div></div>""", unsafe_allow_html=True)
+                raw_esc = html.escape(_raw_line(r))
+                st.markdown(f"""<div class="card card-warning"><div class="email-txt">📧 {r["Email"]}</div><div style="color:#facc15;font-weight:bold;">⚠️ {r["Content"]}</div><div class="content-txt" style="font-size:11px;word-break:break-all;">{raw_esc}</div></div>""", unsafe_allow_html=True)
 
     with col_red:
         st.markdown(f'<div class="col-title bg-red">🔴 FAIL ({len(st.session_state.res_fail)})</div>', unsafe_allow_html=True)
         if st.session_state.res_fail:
-            txt = "\n".join([f"{r['Email']}|{r['Pass']}" for r in st.session_state.res_fail])
+            txt = "\n".join([_raw_line(r) for r in st.session_state.res_fail])
             st.code(txt, language="text")
             for r in st.session_state.res_fail:
-                st.markdown(f"""<div class="card card-fail"><div class="email-txt">📧 {r['Email']}</div><div style="color:#f87171;">❌ {r['Content']}</div></div>""", unsafe_allow_html=True)
+                raw_esc = html.escape(_raw_line(r))
+                st.markdown(f"""<div class="card card-fail"><div class="email-txt">📧 {r["Email"]}</div><div style="color:#f87171;">❌ {r["Content"]}</div><div class="content-txt" style="font-size:11px;word-break:break-all;">{raw_esc}</div></div>""", unsafe_allow_html=True)
 
 with tab2:
     st.header("⚡ CHECK LIVE/DIE")
